@@ -1,7 +1,12 @@
 (() => {
   const ROUND_SIZE = 5;
-  const VERSION = '0.06';
-  const KEYS = { stats: 'quizStats_v1', setName: 'quizSetName_v1' };
+  const VERSION = '0.07';
+  const KEYS = {
+    stats: 'quizStats_v1',
+    setName: 'quizSetName_v1',
+    selectedSet: 'quizSelectedSet_v1',
+    customSets: 'quizCustomSets_v1'
+  };
 
   const $ = (sel) => document.querySelector(sel);
   const screens = {
@@ -12,7 +17,8 @@
     exit: $('#btn-exit'), next: $('#btn-next'), progress: $('#quiz-progress'), category: $('#quiz-category'), question: $('#quiz-question'),
     choices: $('#choices'), feedback: $('#feedback'), roundScore: $('#round-score'), roundReview: $('#round-review'), file: $('#file-input'),
     setName: $('#set-name'), historyBtn: $('#btn-history'), historyBack: $('#btn-history-back'), historyList: $('#history-list'),
-    statsBtn: $('#btn-stats'), statsBack: $('#btn-stats-back'), statsList: $('#stats-list')
+    statsBtn: $('#btn-stats'), statsBack: $('#btn-stats-back'), statsList: $('#stats-list'),
+    setSelector: $('#quiz-set-selector'), saveSetBtn: $('#btn-save-set')
   };
 
   // Audio feedback
@@ -37,111 +43,358 @@
     }; } catch { return { totalCorrect: 0, totalQuestions: 0, attemptsCount: 0, attempts: [], byId: {} }; }
   }
   function setStats(s) { localStorage.setItem(KEYS.stats, JSON.stringify(s)); }
-  function setSetName(name) { localStorage.setItem(KEYS.setName, name); }
-  function getSetName() { return localStorage.getItem(KEYS.setName) || '内蔵サンプル'; }
+
+  function getSelectedSet() { return localStorage.getItem(KEYS.selectedSet) || 'default'; }
+  function setSelectedSet(name) { localStorage.setItem(KEYS.selectedSet, name); }
+
+  function getCustomSets() {
+    try { return JSON.parse(localStorage.getItem(KEYS.customSets)) || {}; }
+    catch { return {}; }
+  }
+  function setCustomSets(sets) { localStorage.setItem(KEYS.customSets, JSON.stringify(sets)); }
 
   function updateMenuStats() {
     const s = getStats();
     els.total.textContent = `${s.totalCorrect} / ${s.totalQuestions}`;
     els.attempts.textContent = `${s.attemptsCount}`;
-    els.setName.textContent = `現在の問題セット: ${getSetName()}`;
+    const currentSet = allQuizSets[getSelectedSet()];
+    els.setName.textContent = currentSet ? `現在: ${currentSet.name} (${currentSet.questions.length}問)` : '';
     const v = document.getElementById('version'); if (v) v.textContent = VERSION;
   }
 
   function shuffle(arr) { for (let i=arr.length-1; i>0; i--){ const j=Math.floor(Math.random()*(i+1)); [arr[i],arr[j]]=[arr[j],arr[i]];} return arr; }
   function show(screen){ Object.values(screens).forEach(s=>s.classList.remove('active')); screens[screen].classList.add('active'); }
 
-  // YAML (very simple)
+  // YAML parser
   function parseYAML(text){
-    const lines = text.replace(/\r\n?/g,'\n').split('\n'); const root={value:{},indent:-1}; const stack=[root];
-    const toVal=v=>{ if(v==null) return ''; v=v.trim(); if(v==='~'||v==='null') return null; if(v==='true')return true; if(v==='false')return false; if(/^-?\d+(?:\.\d+)?$/.test(v)) return Number(v); if((v.startsWith('"')&&v.endsWith('"'))||(v.startsWith("'")&&v.endsWith("'"))) return v.slice(1,-1); return v; };
-    for(const raw of lines){ if(!raw.trim()||raw.trim().startsWith('#')) continue; const indent=raw.match(/^ */)[0].length; const line=raw.trim(); while(stack.length && indent<=stack[stack.length-1].indent) stack.pop(); const parent=stack[stack.length-1];
-      if(line.startsWith('- ')){ const rest=line.slice(2); if(!Array.isArray(parent.value)) parent.value=[]; if(rest.includes(':')){ const i=rest.indexOf(':'); const obj={}; const k=rest.slice(0,i).trim(); const v=rest.slice(i+1).trim(); if(v) obj[k]=toVal(v); parent.value.push(obj); stack.push({value:obj, indent}); }
-        else if(rest){ parent.value.push(toVal(rest)); stack.push({value:toVal(rest), indent}); } else { const obj={}; parent.value.push(obj); stack.push({value:obj, indent}); } }
-      else { const i=line.indexOf(':'); const k=line.slice(0,i).trim(); const v=line.slice(i+1).trim(); if(v){ if(Array.isArray(parent.value)) parent.value.push({[k]:toVal(v)}); else parent.value[k]=toVal(v);} else { const obj={}; if(Array.isArray(parent.value)) parent.value.push({[k]:obj}); else parent.value[k]=obj; stack.push({value:obj, indent}); } }
+    const lines = text.split('\n');
+    const questions = [];
+    let currentQuestion = null;
+    let inChoices = false;
+
+    for (let line of lines) {
+      const trimmedLine = line.trim();
+
+      if (!trimmedLine || trimmedLine.startsWith('#')) continue;
+
+      // Check for new question
+      if (trimmedLine.startsWith('- id:')) {
+        if (currentQuestion) {
+          questions.push(currentQuestion);
+        }
+        currentQuestion = {};
+        currentQuestion.id = parseInt(trimmedLine.split(':')[1].trim());
+        inChoices = false;
+      } else if (currentQuestion) {
+        if (line.match(/^\s+category:/)) {
+          currentQuestion.category = trimmedLine.substring(9).trim();
+        } else if (line.match(/^\s+question:/)) {
+          currentQuestion.question = trimmedLine.substring(9).trim();
+        } else if (line.match(/^\s+choices:/)) {
+          currentQuestion.choices = [];
+          inChoices = true;
+        } else if (line.match(/^\s+answer:/)) {
+          currentQuestion.answer = parseInt(trimmedLine.split(':')[1].trim());
+          inChoices = false;
+        } else if (line.match(/^\s+explanation:/)) {
+          currentQuestion.explanation = trimmedLine.substring(12).trim();
+          inChoices = false;
+        } else if (inChoices && trimmedLine.startsWith('-')) {
+          currentQuestion.choices.push(trimmedLine.substring(1).trim());
+        }
+      }
     }
-    return root.value;
+
+    if (currentQuestion) {
+      questions.push(currentQuestion);
+    }
+
+    return { questions };
   }
 
-  function normalizeData(data){ const list = Array.isArray(data)?data:data?.questions; if(!Array.isArray(list)) throw new Error('不正なデータ形式: questions 配列が見つかりません');
-    return list.map((q,i)=>({ id: q.id ?? (i+1), category: q.category || '一般', question: String(q.question || q.text), choices: Array.from(q.choices || q.options || []).map(String), answer: Number(q.answer ?? q.correctIndex ?? q.correct), explanation: q.explanation?String(q.explanation):'' })); }
+  function normalizeData(data){
+    const list = Array.isArray(data)?data:data?.questions;
+    if(!Array.isArray(list)) throw new Error('不正なデータ形式: questions 配列が見つかりません');
+    return list.map((q,i)=>({
+      id: q.id ?? (i+1),
+      category: q.category || '一般',
+      question: String(q.question || q.text),
+      choices: Array.from(q.choices || q.options || []).map(String),
+      answer: Number(q.answer ?? q.correctIndex ?? q.correct),
+      explanation: q.explanation?String(q.explanation):''
+    }));
+  }
 
-  async function loadFromFile(file){ const text=await file.text(); const name=file.name.toLowerCase(); let data; if(name.endsWith('.json')) data=JSON.parse(text); else if(name.endsWith('.yml')||name.endsWith('.yaml')) data=parseYAML(text); else throw new Error('未対応の拡張子です'); const list=normalizeData(data); if(!list.length) throw new Error('問題がありません'); questionBank=list; setSetName(file.name); updateMenuStats(); }
+  async function loadFromFile(file){
+    const text=await file.text();
+    const name=file.name.toLowerCase();
+    let data;
+    if(name.endsWith('.json')) data=JSON.parse(text);
+    else if(name.endsWith('.yml')||name.endsWith('.yaml')) data=parseYAML(text);
+    else throw new Error('未対応の拡張子です');
+    const list=normalizeData(data);
+    if(!list.length) throw new Error('問題がありません');
 
-  // Default questions (30)
+    // カスタムセットとして保存
+    const customSets = getCustomSets();
+    const setId = `custom_${Date.now()}`;
+    customSets[setId] = {
+      name: file.name,
+      questions: list
+    };
+    setCustomSets(customSets);
+
+    // 全セットに追加
+    allQuizSets[setId] = {
+      name: file.name,
+      questions: list
+    };
+
+    // セレクタを更新
+    updateSetSelector();
+
+    // 新しいセットを選択
+    els.setSelector.value = setId;
+    selectQuizSet(setId);
+  }
+
+  // Default minimal questions
   const DEFAULT_QUESTIONS=[
-    {id:1,category:'化学',question:'水の化学式はどれ？',choices:['HO','H2O','H2O2','OH2O'],answer:1},
-    {id:2,category:'化学',question:'食塩の主成分は？',choices:['NaCl','KCl','CaCO3','Na2CO3'],answer:0},
-    {id:3,category:'化学',question:'pH=7 の水溶液は？',choices:['酸性','中性','塩基性','強酸性'],answer:1},
-    {id:4,category:'化学',question:'炭酸の化学式は？',choices:['HCO3−','H2CO3','CO2','CO3^2−'],answer:1},
-    {id:5,category:'化学',question:'アボガドロ定数のオーダーは？',choices:['10^19','10^20','10^23','10^26'],answer:2},
-    {id:6,category:'化学',question:'酸化とは一般に何が増えること？',choices:['水素','電子','酸素','中性子'],answer:2},
-    {id:7,category:'化学',question:'塩酸の主成分は？',choices:['HCl','HNO3','H2SO4','CH3COOH'],answer:0},
-    {id:8,category:'化学',question:'メタンの化学式は？',choices:['CH4','C2H6','C3H8','CH3OH'],answer:0},
-    {id:9,category:'化学',question:'イオン結合の例はどれ？',choices:['H2O','NaCl','CH4','CO2'],answer:1},
-    {id:10,category:'化学',question:'触媒の働きは？',choices:['平衡を変える','反応熱を増やす','活性化エネルギーを下げる','生成物を増やす'],answer:2},
-    {id:11,category:'人体',question:'赤血球の主な働きは？',choices:['免疫','酸素運搬','血液凝固','ホルモン分泌'],answer:1},
-    {id:12,category:'人体',question:'心臓の心室はいくつ？',choices:['1','2','3','4'],answer:1},
-    {id:13,category:'人体',question:'インスリンを分泌する臓器は？',choices:['肝臓','膵臓','腎臓','甲状腺'],answer:1},
-    {id:14,category:'人体',question:'神経伝達物質でないものは？',choices:['ドーパミン','アセチルコリン','セロトニン','ヘモグロビン'],answer:3},
-    {id:15,category:'人体',question:'呼吸で主に吸う気体は？',choices:['酸素','窒素','二酸化炭素','アルゴン'],answer:1},
-    {id:16,category:'人体',question:'骨の主成分は？',choices:['セルロース','キチン','ヒドロキシアパタイト','ケラチン'],answer:2},
-    {id:17,category:'人体',question:'腎臓の機能単位は？',choices:['ニューロン','ネフロン','サルコメア','肺胞'],answer:1},
-    {id:18,category:'人体',question:'血液凝固に関与するのは？',choices:['白血球','赤血球','血小板','リンパ球'],answer:2},
-    {id:19,category:'人体',question:'視覚の受容体はどこ？',choices:['網膜','角膜','虹彩','水晶体'],answer:0},
-    {id:20,category:'人体',question:'体温調節の中枢は？',choices:['小脳','延髄','視床下部','大脳皮質'],answer:2},
-    {id:21,category:'生物',question:'細胞のエネルギー通貨は？',choices:['NADH','ATP','GTP','ADP'],answer:1},
-    {id:22,category:'生物',question:'DNAの塩基にないものは？',choices:['アデニン','ウラシル','グアニン','シトシン'],answer:1},
-    {id:23,category:'生物',question:'光合成の主な場は？',choices:['ミトコンドリア','葉緑体','小胞体','ゴルジ体'],answer:1},
-    {id:24,category:'生物',question:'生物の分類で界の直下は？',choices:['網','門','科','属'],answer:1},
-    {id:25,category:'生物',question:'原核生物にない構造は？',choices:['核膜','細胞膜','リボソーム','細胞壁'],answer:0},
-    {id:26,category:'生物',question:'酵素活性に最も影響するのは？',choices:['光','温度とpH','音','圧力'],answer:1},
-    {id:27,category:'生物',question:'浸透圧で正しいのは？',choices:['水は低濃度へ','溶質が移動','水は高濃度へ','圧は温度に無関係'],answer:2},
-    {id:28,category:'生物',question:'常染色体の説明で正しいのは？',choices:['性決定のみ関与','体細胞に存在','減数分裂で消失','ミトコンドリアにある'],answer:1},
-    {id:29,category:'生物',question:'相利共生の例は？',choices:['寄生バチと宿主','コロナとヒト','地衣類','ノミとイヌ'],answer:2},
-    {id:30,category:'生物',question:'生態系の生産者は？',choices:['草食動物','肉食動物','分解者','光合成生物'],answer:3},
+    {id:1,category:'テスト',question:'YAMLファイルを読み込んでください',choices:['はい','いいえ','わからない','読み込み済み'],answer:0},
   ];
+
+  // 全問題セット - quiz-data.jsから読み込み
+  let allQuizSets = {};
+
+  // 起動時に問題セットを初期化
+  function loadBuiltinSets() {
+    // QUIZ_DATAはquiz-data.jsで定義されている
+    if (typeof QUIZ_DATA !== 'undefined') {
+      allQuizSets = { ...QUIZ_DATA };
+      console.log('Loaded quiz sets:', Object.keys(allQuizSets));
+    } else {
+      // フォールバック
+      allQuizSets = {
+        default: {
+          name: 'デフォルト（テスト用）',
+          questions: DEFAULT_QUESTIONS
+        }
+      };
+    }
+
+    // カスタムセットを復元
+    const customSets = getCustomSets();
+    for (const [id, set] of Object.entries(customSets)) {
+      allQuizSets[id] = set;
+    }
+
+    // セレクタを更新
+    updateSetSelector();
+
+    // 保存されているセットを選択
+    const savedSet = getSelectedSet();
+    if (allQuizSets[savedSet]) {
+      els.setSelector.value = savedSet;
+      selectQuizSet(savedSet);
+    } else {
+      // 最初のセットを選択
+      const firstSetId = Object.keys(allQuizSets)[0];
+      if (firstSetId) {
+        els.setSelector.value = firstSetId;
+        selectQuizSet(firstSetId);
+      }
+    }
+  }
+
+  function updateSetSelector() {
+    els.setSelector.innerHTML = '';
+
+    // 組み込みセット
+    const builtinSets = Object.entries(allQuizSets)
+      .filter(([id]) => !id.startsWith('custom_'))
+      .sort(([,a], [,b]) => a.name.localeCompare(b.name));
+
+    if (builtinSets.length > 0) {
+      const optgroup = document.createElement('optgroup');
+      optgroup.label = '組み込み問題セット';
+      builtinSets.forEach(([id, set]) => {
+        const option = document.createElement('option');
+        option.value = id;
+        option.textContent = `${set.name} (${set.questions.length}問)`;
+        optgroup.appendChild(option);
+      });
+      els.setSelector.appendChild(optgroup);
+    }
+
+    // カスタムセット
+    const customSets = Object.entries(allQuizSets)
+      .filter(([id]) => id.startsWith('custom_'))
+      .sort(([,a], [,b]) => a.name.localeCompare(b.name));
+
+    if (customSets.length > 0) {
+      const optgroup = document.createElement('optgroup');
+      optgroup.label = '読み込んだ問題セット';
+      customSets.forEach(([id, set]) => {
+        const option = document.createElement('option');
+        option.value = id;
+        option.textContent = `${set.name} (${set.questions.length}問)`;
+        optgroup.appendChild(option);
+      });
+      els.setSelector.appendChild(optgroup);
+    }
+  }
+
+  function selectQuizSet(setId) {
+    const set = allQuizSets[setId];
+    if (!set) return;
+
+    questionBank = set.questions.slice();
+    setSelectedSet(setId);
+    updateMenuStats();
+  }
 
   let questionBank = DEFAULT_QUESTIONS.slice();
   let currentRound = []; let idx = 0; let correctCount = 0; let answered = false; let advanceTimer = null; let roundLog = [];
   function clearAdvanceTimer(){ if(advanceTimer){ clearTimeout(advanceTimer); advanceTimer=null; } }
 
   function canonicalKey(q){ return (q && q.id!=null) ? `id:${q.id}` : `q:${q?.question ?? ''}`; }
-  function ensureEntry(s,q){ const key=canonicalKey(q); if(!s.byId[key]) s.byId[key]={ id:q.id??null, title:q.question, attempts:0, correct:0, wrong:0, last:null, category:q.category, series:[], recent:[] };
-    // migrate old keys
-    [String(q.id??''), String(q.question??'')].forEach(k=>{ if(!k) return; if(s.byId[k] && s.byId[k]!==s.byId[key]){ const from=s.byId[k], to=s.byId[key]; to.attempts+=(from.attempts||0); to.correct+=(from.correct||0); to.wrong+=(from.wrong||0); to.last=Math.max(to.last||0, from.last||0)||null; to.category=to.category||from.category; const map=new Map(); (to.series||[]).forEach(x=>map.set(x.d,(map.get(x.d)||0)+(x.c||0))); (from.series||[]).forEach(x=>map.set(x.d,(map.get(x.d)||0)+(x.c||0))); to.series=Array.from(map.entries()).map(([d,c])=>({d,c})).sort((a,b)=>a.d.localeCompare(b.d)); delete s.byId[k]; } });
-    const e=s.byId[key]; e.id=q.id??e.id; e.title=q.question??e.title; e.category=q.category??e.category; return key; }
 
-  function startRound(){ clearAdvanceTimer(); const pool=questionBank.slice(); shuffle(pool); currentRound=pool.slice(0,ROUND_SIZE); idx=0; correctCount=0; roundLog=[]; show('quiz'); renderQuestion(); }
-  function renderQuestion(){ clearAdvanceTimer(); const q=currentRound[idx]; els.progress.textContent=`${idx+1} / ${ROUND_SIZE}`; els.category.textContent=q.category||''; els.question.textContent=q.question; els.choices.innerHTML=''; els.feedback.textContent=''; els.feedback.className='feedback'; els.next.disabled=true; answered=false; q.choices.forEach((t,i)=>{ const b=document.createElement('button'); b.className='choice'; b.textContent=t; b.onclick=()=>selectChoice(i); els.choices.appendChild(b); }); }
+  function startRound() {
+    currentRound = shuffle(questionBank.slice()).slice(0, ROUND_SIZE);
+    idx = 0; correctCount = 0; roundLog = []; show('quiz'); showQuestion();
+  }
 
-  function recordAnswer(q,isCorrect){ const s=getStats(); const key=ensureEntry(s,q); s.byId[key].attempts+=1; if(isCorrect) s.byId[key].correct+=1; else s.byId[key].wrong+=1; s.byId[key].last=Date.now(); const d=new Date(); const today=`${d.getFullYear()}${String(d.getMonth()+1).padStart(2,'0')}${String(d.getDate()).padStart(2,'0')}`; const ser=s.byId[key].series||[]; if(ser.length&&ser[ser.length-1].d===today) ser[ser.length-1].c+=1; else ser.push({d:today,c:1}); s.byId[key].series=ser; const rec=s.byId[key].recent||[]; rec.push({ts:Date.now(), ok:isCorrect?1:0}); s.byId[key].recent=rec.slice(-50); setStats(s); }
+  function showQuestion() {
+    const q = currentRound[idx]; els.progress.textContent = `${idx + 1} / ${ROUND_SIZE}`;
+    els.category.textContent = q.category || '一般'; els.question.textContent = q.question;
+    els.choices.innerHTML = shuffle(q.choices.map((c,i)=>({text:c,idx:i}))).map(c=>`<button class="choice" data-idx="${c.idx}">${c.text}</button>`).join('');
+    els.feedback.innerHTML = ''; els.next.disabled = true; answered = false; clearAdvanceTimer();
+  }
 
-  function selectChoice(choiceIndex){ if(answered) return; answered=true; const q=currentRound[idx]; const nodes=Array.from(els.choices.children); nodes.forEach((n,i)=>{ n.disabled=true; if(i===q.answer) n.classList.add('correct'); if(i===choiceIndex && choiceIndex!==q.answer) n.classList.add('wrong'); }); const ok=choiceIndex===q.answer; if(ok){ els.feedback.textContent='正解！'; els.feedback.classList.add('ok'); correctCount++; playCorrect(); } else { els.feedback.textContent='不正解'; els.feedback.classList.add('ng'); playWrong(); }
-    recordAnswer(q, ok); roundLog.push({ id:q.id, category:q.category, question:q.question, choices:q.choices.slice(), selected:choiceIndex, correct:q.answer, correctFlag:ok }); if(q.explanation){ const ex=document.createElement('div'); ex.style.marginTop='6px'; ex.textContent=`解説: ${q.explanation}`; els.feedback.appendChild(ex);} els.next.disabled=false; const delay = ok ? 500 : 1500; advanceTimer=setTimeout(()=>nextQuestion(), delay); }
+  function selectAnswer(btnEl, selectedIdx) {
+    if (answered) return;
+    const q = currentRound[idx]; const correct = selectedIdx === q.answer; answered = true;
+    document.querySelectorAll('.choice').forEach(btn => { btn.classList.remove('selected'); btn.disabled = true; });
+    btnEl.classList.add('selected'); els.next.disabled = false;
+    roundLog.push({ question: q, selectedIdx, correct });
 
-  function nextQuestion(){ if(idx+1<ROUND_SIZE){ idx++; renderQuestion(); } else { endRound(); } }
-  function endRound(){ clearAdvanceTimer(); els.roundScore.textContent=`${correctCount} / ${ROUND_SIZE}`; const s=getStats(); s.totalCorrect+=correctCount; s.totalQuestions+=ROUND_SIZE; s.attemptsCount+=1; s.attempts.unshift({ts:Date.now(), correct:correctCount, total:ROUND_SIZE, set:getSetName()}); s.attempts=s.attempts.slice(0,200); setStats(s); if(els.roundReview){ els.roundReview.innerHTML=''; roundLog.forEach((r,i)=>{ const li=document.createElement('li'); li.className='review-item'; const left=document.createElement('div'); const right=document.createElement('div'); left.innerHTML=`<div class="meta">#${i+1} ・ID ${r.id}・${r.category||''}</div><div class="q">${r.question}</div>`; const your=r.choices[r.selected]??'-'; const corr=r.choices[r.correct]??'-'; right.innerHTML = r.correctFlag ? `<div class="correct">正解</div><small>${corr}</small>` : `<div class="wrong">不正解</div><small>あなた: ${your}<br/>正解: ${corr}</small>`; li.appendChild(left); li.appendChild(right); els.roundReview.appendChild(li); }); } show('result'); updateMenuStats(); }
+    setTimeout(() => {
+      document.querySelectorAll('.choice').forEach(btn => {
+        if (parseInt(btn.dataset.idx) === q.answer) { btn.classList.add('correct'); }
+        else if (btn === btnEl) { btn.classList.add('wrong'); }
+      });
+      els.feedback.innerHTML = correct ?
+        `<div class="ok">正解！${q.explanation ? ` ${q.explanation}` : ''}</div>` :
+        `<div class="ng">不正解！${q.explanation ? ` ${q.explanation}` : ''}</div>`;
+      correct ? (correctCount++, playCorrect()) : playWrong();
+      clearAdvanceTimer(); advanceTimer = setTimeout(() => nextQuestion(), 3000);
+    }, 200);
 
-  function showHistory(){ const s=getStats(); els.historyList.innerHTML=''; if(!s.attempts.length){ const li=document.createElement('li'); li.textContent='まだ履歴がありません'; els.historyList.appendChild(li); } else { s.attempts.forEach(a=>{ const li=document.createElement('li'); const left=document.createElement('div'); const right=document.createElement('div'); const d=new Date(a.ts); left.innerHTML=`<strong>${a.correct} / ${a.total}</strong><br/><small>${d.toLocaleString()}・${a.set||'セット'}</small>`; right.innerHTML=`<small>#${s.attempts.length - (s.attempts.indexOf(a))}</small>`; li.appendChild(left); li.appendChild(right); els.historyList.appendChild(li); }); } show('history'); }
+    // 統計を更新
+    const s = getStats(); const key = canonicalKey(q);
+    if (!s.byId[key]) s.byId[key] = { correct: 0, total: 0, q: q.question, category: q.category };
+    s.byId[key].total++; if (correct) s.byId[key].correct++;
+    s.totalQuestions++; if (correct) s.totalCorrect++;
+    setStats(s);
+  }
 
-  function showStats(){ const s=getStats(); els.statsList.innerHTML=''; const items=Object.values(s.byId||{}); if(!items.length){ const li=document.createElement('li'); li.textContent='まだ統計がありません'; els.statsList.appendChild(li);} else { const mode=(document.getElementById('stats-sort')?.value)||'id'; items.sort((a,b)=>{ const accA=(a.attempts? a.correct/a.attempts : 0), accB=(b.attempts? b.correct/b.attempts : 0); if(mode==='wrong') return (b.wrong||0)-(a.wrong||0); if(mode==='acc') return accA-accB; if(mode==='recent') return (b.last||0)-(a.last||0); const ai=Number(a.id), bi=Number(b.id); if(!Number.isNaN(ai)&&!Number.isNaN(bi)) return ai-bi; if(!Number.isNaN(ai)) return -1; if(!Number.isNaN(bi)) return 1; return String(a.title||'').localeCompare(String(b.title||'')); }); items.forEach(it=>{ const total=(it.attempts||0); const acc= total ? Math.round(((it.correct||0)/total)*1000)/10 : 0; const li=document.createElement('li'); const series=(it.series||[]).map(x=>x.c).join(','); const labelId=(it.id!=null && !Number.isNaN(Number(it.id)))?`ID ${it.id}`:'ID -'; const title=it.title||''; li.innerHTML=`<div><strong>${labelId}</strong><br/><small>${it.category||''}</small><br/><small class="meta">${title}</small><br/><small class="meta">${series}</small></div><div><strong>${acc}%</strong><br/><small>${it.correct||0}/${total} 正解・誤答 ${it.wrong||0}</small></div>`; els.statsList.appendChild(li); }); } show('stats'); }
+  function nextQuestion() {
+    clearAdvanceTimer(); idx++;
+    if (idx >= ROUND_SIZE) { showResult(); } else { showQuestion(); }
+  }
 
-  // Events
-  els.start.addEventListener('click', startRound);
-  els.again.addEventListener('click', startRound);
-  els.menu.addEventListener('click', ()=>{ clearAdvanceTimer(); show('menu'); updateMenuStats(); });
-  els.exit.addEventListener('click', ()=>{ clearAdvanceTimer(); show('menu'); updateMenuStats(); });
-  els.next.addEventListener('click', nextQuestion);
-  els.historyBtn.addEventListener('click', showHistory);
-  els.historyBack.addEventListener('click', ()=>{ clearAdvanceTimer(); show('menu'); });
-  els.statsBtn?.addEventListener('click', showStats);
-  els.statsBack?.addEventListener('click', ()=>{ clearAdvanceTimer(); show('menu'); });
-  document.getElementById('stats-sort')?.addEventListener('change', showStats);
+  function showResult() {
+    show('result'); els.roundScore.innerHTML = `<strong>${correctCount}</strong> / ${ROUND_SIZE} 問正解`;
+    const s = getStats(); s.attemptsCount++; s.attempts.unshift({ date: new Date().toISOString(), correct: correctCount, total: ROUND_SIZE, setName: allQuizSets[getSelectedSet()]?.name || 'Unknown' });
+    if (s.attempts.length > 200) s.attempts.length = 200; setStats(s);
 
-  els.file.addEventListener('change', async (e)=>{ const file=e.target.files?.[0]; if(!file) return; try{ await loadFromFile(file); alert('問題セットを読み込みました'); } catch(err){ console.error(err); alert('読み込みエラー: '+(err?.message||err)); } finally { e.target.value=''; } });
+    els.roundReview.innerHTML = roundLog.map((log, i) => {
+      const q = log.question; const mark = log.correct ? '○' : '×';
+      return `<div class="review-item ${log.correct?'correct':'wrong'}">
+        <div class="q-num">${i+1}. ${mark}</div>
+        <div class="q-text">${q.question}</div>
+        <div class="q-ans">正解: ${q.choices[q.answer]}</div>
+        ${!log.correct ? `<div class="q-selected">あなた: ${q.choices[log.selectedIdx]}</div>` : ''}
+        ${q.explanation ? `<div class="q-exp">${q.explanation}</div>` : ''}
+      </div>`;
+    }).join('');
 
-  // init
-  updateMenuStats();
+    updateMenuStats();
+  }
+
+  // 初期化
+  window.addEventListener('DOMContentLoaded', () => {
+    // 組み込みセットを読み込む（同期処理に変更）
+    loadBuiltinSets();
+
+    updateMenuStats();
+
+    // イベントリスナー
+    els.start.addEventListener('click', startRound);
+    els.again.addEventListener('click', startRound);
+    els.menu.addEventListener('click', () => { clearAdvanceTimer(); show('menu'); updateMenuStats(); });
+    els.exit.addEventListener('click', () => { clearAdvanceTimer(); show('menu'); updateMenuStats(); });
+    els.next.addEventListener('click', nextQuestion);
+    els.choices.addEventListener('click', (e) => { if (e.target.classList.contains('choice')) selectAnswer(e.target, parseInt(e.target.dataset.idx)); });
+
+    // セット選択
+    els.setSelector.addEventListener('change', (e) => {
+      selectQuizSet(e.target.value);
+    });
+
+    // セット保存ボタン
+    els.saveSetBtn.addEventListener('click', () => {
+      const selectedSet = getSelectedSet();
+      setSelectedSet(selectedSet);
+      alert('現在のセットをデフォルトとして保存しました');
+    });
+
+    // ファイル読み込み
+    els.file.addEventListener('change', async (e)=>{
+      const file=e.target.files?.[0];
+      if(!file) return;
+      try{
+        await loadFromFile(file);
+        alert('問題セットを読み込みました');
+      } catch(err){
+        console.error(err);
+        alert('読み込みエラー: '+(err?.message||err));
+      } finally {
+        e.target.value='';
+      }
+    });
+
+    els.historyBtn.addEventListener('click', () => {
+      const s = getStats();
+      els.historyList.innerHTML = s.attempts.length ?
+        s.attempts.map(a => `<div class="history-item">
+          <span>${new Date(a.date).toLocaleString('ja-JP', {month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'})}</span>
+          <span>${a.correct}/${a.total}</span>
+          <span class="muted">${a.setName || ''}</span>
+        </div>`).join('') :
+        '<div class="muted">まだ履歴がありません</div>';
+      show('history');
+    });
+    els.historyBack.addEventListener('click', () => show('menu'));
+
+    els.statsBtn.addEventListener('click', () => {
+      const s = getStats(); const sorted = Object.entries(s.byId).sort((a,b) => b[1].total - a[1].total);
+      els.statsList.innerHTML = sorted.length ?
+        sorted.map(([key, d]) => {
+          const rate = d.total > 0 ? Math.round(100 * d.correct / d.total) : 0;
+          const className = rate >= 80 ? 'high' : rate >= 50 ? 'mid' : 'low';
+          return `<div class="stat-item">
+            <div class="stat-q">${d.q}</div>
+            <div class="stat-info">
+              <span class="stat-cat">${d.category}</span>
+              <span class="stat-rate ${className}">${rate}%</span>
+              <span class="stat-count">(${d.correct}/${d.total})</span>
+            </div>
+          </div>`;
+        }).join('') :
+        '<div class="muted">まだ統計データがありません</div>';
+      show('stats');
+    });
+    els.statsBack.addEventListener('click', () => show('menu'));
+  });
 })();
-

@@ -1,0 +1,55 @@
+questions:
+  - id: 1
+    category: プログラミング
+    question: JavaScriptの変数宣言で使われないのは？
+    choices:
+      - let
+      - var
+      - const
+      - int
+    answer: 3
+    explanation: JavaScriptではintは使われません
+
+  - id: 2
+    category: プログラミング
+    question: HTMLの見出しタグで最も大きいのは？
+    choices:
+      - h6
+      - h1
+      - h3
+      - h4
+    answer: 1
+    explanation: h1が最も大きい見出しです
+
+  - id: 3
+    category: プログラミング
+    question: CSSで背景色を指定するプロパティは？
+    choices:
+      - color
+      - background-color
+      - bg-color
+      - background
+    answer: 1
+    explanation: background-colorで背景色を指定します
+
+  - id: 4
+    category: 一般知識
+    question: 日本の首都は？
+    choices:
+      - 大阪
+      - 京都
+      - 東京
+      - 名古屋
+    answer: 2
+    explanation: 日本の首都は東京です
+
+  - id: 5
+    category: 一般知識
+    question: 1年は何日？
+    choices:
+      - 364日
+      - 365日
+      - 366日
+      - 360日
+    answer: 1
+    explanation: 通常の年は365日です

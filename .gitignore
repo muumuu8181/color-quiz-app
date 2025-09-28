@@ -1,0 +1,14 @@
+# Python
+*.pyc
+__pycache__/
+build-quiz-data.py
+
+# Backup files
+app-old.js
+*.backup
+test-yaml.html
+使い方.txt
+
+# OS files
+.DS_Store
+Thumbs.db

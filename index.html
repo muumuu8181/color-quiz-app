@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <title>4択クイズ</title>
     <link rel="stylesheet" href="./style.css?v=0.06" />
+    <script src="./quiz-data.js"></script>
   </head>
   <body>
     <main id="app">
@@ -20,12 +21,20 @@
 
         <div class="section">
           <h2>問題セット</h2>
-          <p class="hint">JSON または YAML を読み込めます。未選択時は内蔵サンプルを使用します。</p>
-          <label class="file">
-            <input type="file" id="file-input" accept=".json,.yml,.yaml" />
-            <span>問題セットを読み込む</span>
-          </label>
+          <div class="quiz-selector">
+            <select id="quiz-set-selector">
+              <option value="">読み込み中...</option>
+            </select>
+            <button id="btn-save-set" class="secondary">このセットを保存</button>
+          </div>
           <div id="set-name" class="muted"></div>
+          <details style="margin-top: 10px;">
+            <summary style="cursor: pointer; color: #666;">外部ファイルを読み込む</summary>
+            <label class="file" style="margin-top: 10px;">
+              <input type="file" id="file-input" accept=".json,.yml,.yaml" />
+              <span>ファイルを選択</span>
+            </label>
+          </details>
         </div>
 
         <button id="btn-history" class="secondary">スコア履歴を見る</button>
